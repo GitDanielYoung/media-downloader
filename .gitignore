@@ -1,0 +1,10 @@
+/bin/
+/logs/
+/.archives/
+/downloads/
+*.part
+*.ytdl
+*.zip
+*.log
+.DS_Store
+Thumbs.db
