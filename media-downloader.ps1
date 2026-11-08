@@ -25,7 +25,6 @@ $pageUri = $null
 if (![Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$pageUri) -or $pageUri.Scheme -notin @('http','https')) { throw 'Enter a valid HTTP or HTTPS URL' }
 if ($MaxVideos -lt 0 -or $MaxImages -lt 0) { throw 'Download limits cannot be negative' }
 function SafeName([string]$name) {
-    $name = [regex]::Replace($name, '[^\x20-\x7E]', '')
     $name = [regex]::Replace($name, '[\x00-\x1f<>:"/\\|?*]', '_').Trim().TrimEnd('.')
     if (!$name) { $name = 'Untitled' }
     if ($name.Length -gt 90) { $name = $name.Substring(0,90) }
@@ -37,6 +36,14 @@ function ResolveMedia([string]$value) {
     $value = [Net.WebUtility]::HtmlDecode($value.Trim()).Replace('\/', '/')
     try { $resolved = [Uri]::new($pageUri,$value); if ($resolved.Scheme -in @('http','https')) { return $resolved.AbsoluteUri } } catch {}
     return $null
+}
+function DirectVideoName([string]$Title,[string]$Label,[int]$Index,[int]$Count) {
+    if ($Label -match '\u7b2c\s*(\d+)\s*\u96c6') {
+        $number=[int]$Matches[1]
+        $Label=([string][char]0x7b2c)+('{0:D2}' -f $number)+([string][char]0x96c6)
+    } elseif (!$Label -and $Count -gt 1) { $Label='Video {0:D3}' -f $Index }
+    $name=$Title; if($Label){$name=$Title+' '+$Label}
+    return SafeName $name
 }
 $handler = New-Object Net.Http.HttpClientHandler
 $handler.AutomaticDecompression = [Net.DecompressionMethods]::GZip -bor [Net.DecompressionMethods]::Deflate
@@ -70,10 +77,6 @@ try {
     if ($match.Success) { $title = [Net.WebUtility]::HtmlDecode($match.Groups[1].Value).Trim() }
 } catch { $warnings.Add('Page fetch failed: ' + $_.Exception.Message); Write-Diagnostic -Stage 'page-fetch' -Message $_.Exception.Message -MediaUrl $Url -Record $_ }
 $runStamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
-$folder = Join-Path $OutputDirectory ((SafeName $title) + '_' + $runStamp)
-if ($ResumeDirectory) { $folder = [IO.Path]::GetFullPath($ResumeDirectory) }
-[IO.Directory]::CreateDirectory($folder) | Out-Null
-$log = Join-Path $folder 'download.log'
 # Collect static tags, lazy images, srcset, Open Graph, and explicit media URLs.
 foreach ($tagMatch in [regex]::Matches($html, '(?is)<(img|video|source|a|meta)\b[^>]*>')) {
     $tag = $tagMatch.Value; $tagName = $tagMatch.Groups[1].Value.ToLowerInvariant()
@@ -123,10 +126,11 @@ if ($Type -ne 'image' -and $pageUri.Host -match '(^|\.)ikanbot\.com$') {
     } catch { $warnings.Add('Site adapter failed: ' + $_.Exception.Message); Write-Diagnostic -Stage 'site-adapter' -Message $_.Exception.Message -MediaUrl $Url -Record $_ }
 }
 $extractor = $null
+$extractorLog = $null
 if ($Type -ne 'image' -and !$siteAdapted) {
     if (!(Test-Path -LiteralPath $yt)) { throw 'Missing bin\yt-dlp.exe' }
     Write-Host 'Running the general video extractor...'
-    $extractorLog = Join-Path $folder 'extractor.log'
+    $extractorLog = Join-Path (Join-Path $PSScriptRoot 'logs') ($script:DiagnosticRunId+'.extractor.log')
     $savedPreference=$ErrorActionPreference; $ErrorActionPreference='Continue'
     $raw = & $yt --dump-single-json --skip-download --flat-playlist --socket-timeout 15 --retries 1 --extractor-retries 1 --no-warnings -- $Url 2> $extractorLog
     $extractorExit=$LASTEXITCODE; $ErrorActionPreference=$savedPreference
@@ -146,6 +150,17 @@ if ($extractor) {
     $extractorCount = $entries.Count
 }
 $videoCount = $videos.Count; if($extractor){$videoCount=$extractorCount}
+if ($extractor) {
+    if ($extractor.playlist_title) { $title=$extractor.playlist_title }
+    elseif ($extractor.title) { $title=$extractor.title }
+}
+$folder = Join-Path $OutputDirectory (SafeName $title)
+if ($ResumeDirectory) { $folder = [IO.Path]::GetFullPath($ResumeDirectory) }
+[IO.Directory]::CreateDirectory($folder) | Out-Null
+$log = Join-Path $folder 'download.log'
+if ($extractorLog -and (Test-Path -LiteralPath $extractorLog)) {
+    Copy-Item -LiteralPath $extractorLog -Destination (Join-Path $folder 'extractor.log') -Force
+}
 $manifestPath = Join-Path $folder 'scan.json'
 [pscustomobject]@{Page=$Url;Title=$title;Time=(Get-Date -Format o);Videos=@($videos.ToArray());Images=@($images.ToArray());ExtractorVideoCount=$extractorCount;Warnings=@($warnings.ToArray())} | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 Write-Host ("Scan result: {0} videos, {1} images" -f $videoCount,$images.Count)
@@ -155,7 +170,7 @@ function DownloadVideo([string]$link,[string]$template) {
     $archiveDir = Join-Path $OutputDirectory '.archives'; [IO.Directory]::CreateDirectory($archiveDir) | Out-Null
     $digest = [Security.Cryptography.SHA256]::Create()
     try { $key = ([BitConverter]::ToString($digest.ComputeHash([Text.Encoding]::UTF8.GetBytes($link)))).Replace('-','') } finally { $digest.Dispose() }
-    $argsList = @('--newline','--no-warnings','--socket-timeout','30','--retries','5','--fragment-retries','5','--abort-on-unavailable-fragments','--concurrent-fragments','6','--continue','--restrict-filenames','--windows-filenames','--ffmpeg-location',$bin,'--merge-output-format','mp4','--remux-video','mp4','--fixup','force','--download-archive',(Join-Path $archiveDir ($key+'.txt')),'--referer',$Url,'-o',$template)
+    $argsList = @('--newline','--no-warnings','--socket-timeout','30','--retries','5','--fragment-retries','5','--abort-on-unavailable-fragments','--concurrent-fragments','6','--continue','--windows-filenames','--ffmpeg-location',$bin,'--merge-output-format','mp4','--remux-video','mp4','--fixup','force','--download-archive',(Join-Path $archiveDir ($key+'.txt')),'--referer',$Url,'-o',$template)
     if($MaxVideos -gt 0){$argsList += @('--playlist-end', "$MaxVideos")}
     $savedPreference=$ErrorActionPreference; $ErrorActionPreference='Continue'
     & $yt @argsList -- $link 2>&1 | ForEach-Object {
@@ -168,17 +183,14 @@ function DownloadVideo([string]$link,[string]$template) {
     $results.Add([pscustomobject]@{Kind='video';Url=$link;Success=$ok})
 }
 if ($Type -ne 'image') {
-    $videoDir = Join-Path $folder 'Videos'; [IO.Directory]::CreateDirectory($videoDir) | Out-Null
+    $videoDir = $folder
     if ($extractor) {
-        $template = Join-Path $videoDir '%(title).100B [%(id)s].%(ext)s'
-        if ($extractor.entries) { $template = Join-Path $videoDir '%(playlist_title,playlist)s Episode %(playlist_index)02d [%(id)s].%(ext)s' }
+        $template = Join-Path $videoDir '%(title)s.%(ext)s'
         DownloadVideo $Url $template
     } else {
         $i=0; foreach($v in $videos){ $i++; if($MaxVideos -gt 0 -and $i -gt $MaxVideos){break}
-            $label = $v.Name
-            if ($label -match '\u7b2c\s*(\d+)\s*\u96c6') { $label = 'Episode {0:D2}' -f [int]$Matches[1] }
-            elseif (!$label) { $label = 'Video {0:D3}' -f $i }
-            DownloadVideo $v.Url (Join-Path $videoDir ((SafeName ($title+' '+$label)) + '.%(ext)s'))
+            $mediaName=DirectVideoName $title $v.Name $i $videos.Count
+            DownloadVideo $v.Url (Join-Path $videoDir ($mediaName + '.%(ext)s'))
         }
     }
 }

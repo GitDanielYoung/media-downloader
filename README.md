@@ -1,6 +1,6 @@
 ﻿# Media Downloader
 
-A Windows command-line tool that scans a page URL and downloads discovered videos and images. All application messages, documentation, and generated filename labels are in English. Source page metadata and operating-system error messages retain their original language.
+A Windows command-line tool that scans a page URL and downloads discovered videos and images. Tool filenames, application messages, and documentation are in English. Downloaded content retains the original page or video title, including Chinese characters. Source metadata and operating-system error messages retain their original language.
 
 ## Quick start
 
@@ -10,7 +10,7 @@ Requires Windows 10/11 (x64) and Windows PowerShell 5.1 or later. No Python inst
 2. For a source checkout, run `powershell -NoProfile -ExecutionPolicy Bypass -File .\InstallDependencies.ps1`. This downloads yt-dlp and FFmpeg from their upstream GitHub releases. Portable packages already include these binaries.
 3. Double-click `StartDownload.cmd`, paste a page URL, and press Enter.
 
-The default output directory is `D:\MediaDownloads`. Use `-OutputDirectory` if the D: drive is unavailable. Each run creates a separate task folder containing `Videos`, `Images`, `scan.json`, and `results.json` as applicable.
+The default output directory is `D:\MediaDownloads`. Use `-OutputDirectory` if the D: drive is unavailable. The content folder uses the original video, playlist, or page title without a timestamp suffix. Videos are saved directly inside that folder; images use an `Images` subfolder. The task also saves `scan.json` and `results.json` as applicable. Repeated runs reuse the title folder; run-specific diagnostic logs remain separate.
 
 ## Commands
 
@@ -27,9 +27,9 @@ Types: `all` (default), `video`, `image`. A limit of zero means unlimited. `-Sca
 
 ## Supported behavior
 
-- Videos: yt-dlp site extractors, direct media URLs, HLS/DASH, and supported playlists. An Ikanbot adapter selects one playback source to avoid duplicate episodes. Episode labels use `Episode 01`.
+- Videos: yt-dlp site extractors, direct media URLs, HLS/DASH, and supported playlists. An Ikanbot adapter selects one playback source to avoid duplicate episodes. It preserves the series title and normalizes original Chinese episode labels to two digits. Other extractors preserve individual video titles without appending IDs.
 - Images: HTML image tags, common lazy-loading attributes, srcset variants, posters, Open Graph images, and explicit image links. Responses must have an image MIME type. Different srcset sizes are separate downloads.
-- Generated file and folder names use ASCII. Page titles without usable ASCII characters use a fallback name. Source metadata in JSON manifests is preserved.
+- Content file and folder names preserve Unicode titles. Only characters invalid in Windows filenames are replaced; reserved names and overly long names may be adjusted. Source metadata in JSON manifests is preserved. Distinct videos with identical titles share a target filename, so use separate output roots if needed.
 - Video downloads retry and resume through yt-dlp; missing fragments abort the affected download. Image failures do not stop subsequent images.
 - `.archives` under the output root records completed videos separately by source URL. Repeated runs skip recorded videos. Use another output root to download them again.
 - Playlist results are recorded as one task. Consult `download.log` for individual download progress.
