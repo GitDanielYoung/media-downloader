@@ -29,6 +29,6 @@ function Initialize-Diagnostics([string]$Root) {
     [IO.Directory]::CreateDirectory($Root) | Out-Null
     $script:DiagnosticJson=Join-Path $Root ($script:DiagnosticRunId+'.errors.jsonl')
     $script:DiagnosticText=Join-Path $Root ($script:DiagnosticRunId+'.errors.log')
-    Write-Diagnostic -Stage 'environment' -Severity Info -Message ('tool=1.1; PowerShell='+$PSVersionTable.PSVersion+'; OS='+[Environment]::OSVersion.VersionString+'; 64bit='+[Environment]::Is64BitProcess)
+    Write-Diagnostic -Stage 'environment' -Severity Info -Message ('tool=1.2; PowerShell='+$PSVersionTable.PSVersion+'; OS='+[Environment]::OSVersion.VersionString+'; 64bit='+[Environment]::Is64BitProcess)
     Write-Host "Diagnostic log: $script:DiagnosticText"
 }

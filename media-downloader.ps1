@@ -10,6 +10,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'error-logging.ps1')
+. (Join-Path $PSScriptRoot 'video-selection.ps1')
 Initialize-Diagnostics (Join-Path $PSScriptRoot 'logs')
 trap {
     Write-Diagnostic -Stage 'fatal' -Message $_.Exception.Message -MediaUrl $Url -Record $_
@@ -64,7 +65,7 @@ function AddMedia([string]$kind,[string]$link,[string]$name) {
     else { if ($seenImages.Add($link)) { $images.Add($entry) } }
 }
 Write-Host 'Scanning page...'
-$html = ''; $title = $pageUri.Host
+$html = ''; $title = $pageUri.Host; $contentType = ''
 try {
     $response = $client.GetAsync($pageUri,[Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
     $response.EnsureSuccessStatusCode() | Out-Null
@@ -104,6 +105,9 @@ foreach ($m in [regex]::Matches($unescaped, '(?i)https?://[^\s"''<>\\]+?\.(mp4|m
     if ($m.Groups[1].Value -match '^(mp4|m3u8|mpd|webm|mov|mkv)$') { if ($Type -ne 'image') { AddMedia video $m.Value '' } }
     elseif ($Type -ne 'video') { AddMedia image $m.Value '' }
 }
+$videoCandidates=@($videos.ToArray())
+$videos.Clear(); $seenVideos.Clear()
+$selection=Get-MainVideoSelection -Html $html -PageUri $pageUri -ContentType $contentType
 # Ikanbot adapter: use the public player API and select one source to avoid duplicate episodes.
 $siteAdapted = $false
 if ($Type -ne 'image' -and $pageUri.Host -match '(^|\.)ikanbot\.com$') {
@@ -125,9 +129,12 @@ if ($Type -ne 'image' -and $pageUri.Host -match '(^|\.)ikanbot\.com$') {
         $h1 = [regex]::Match($html,'(?is)<h1[^>]*>(.*?)</h1>'); if($h1.Success){ $title=[Net.WebUtility]::HtmlDecode($h1.Groups[1].Value).Trim() }
     } catch { $warnings.Add('Site adapter failed: ' + $_.Exception.Message); Write-Diagnostic -Stage 'site-adapter' -Message $_.Exception.Message -MediaUrl $Url -Record $_ }
 }
+if(!$siteAdapted -and $Type -ne 'image'){
+    foreach($item in $selection.Selected){AddMedia video $item.Url $item.Name}
+}
 $extractor = $null
 $extractorLog = $null
-if ($Type -ne 'image' -and !$siteAdapted) {
+if ($Type -ne 'image' -and !$siteAdapted -and $videos.Count -eq 0) {
     if (!(Test-Path -LiteralPath $yt)) { throw 'Missing bin\yt-dlp.exe' }
     Write-Host 'Running the general video extractor...'
     $extractorLog = Join-Path (Join-Path $PSScriptRoot 'logs') ($script:DiagnosticRunId+'.extractor.log')
@@ -141,7 +148,11 @@ if ($Type -ne 'image' -and !$siteAdapted) {
     }
     if ($extractorExit -eq 0 -and $raw) {
         try { $extractor = ($raw -join "`n") | ConvertFrom-Json } catch { $warnings.Add('The video extractor returned invalid JSON'); Write-Diagnostic -Stage 'extractor-json' -Message $_.Exception.Message -MediaUrl $Url -Record $_ }
-    } else { $warnings.Add('The extractor did not recognize this page. Trying discovered direct media URLs. See extractor.log.') }
+    } else { $warnings.Add('The extractor failed. Unconfirmed candidate URLs will not be downloaded. See extractor.log.') }
+    if($extractor -and !(Test-SpecializedExtractor $extractor)){
+        $extractor=$null
+        $warnings.Add('Generic extractor results were rejected because no main player was confirmed.')
+    }
 }
 $extractorCount = 0
 if ($extractor) {
@@ -150,6 +161,9 @@ if ($extractor) {
     $extractorCount = $entries.Count
 }
 $videoCount = $videos.Count; if($extractor){$videoCount=$extractorCount}
+if($siteAdapted){$selection.Reason='Dedicated site adapter selected the series playback source'}
+elseif($extractor){$selection.Reason='Specialized site extractor: '+$extractor.extractor_key}
+Write-Diagnostic -Stage 'video-selection-summary' -Severity Info -Message ($selection.Reason+'; selected='+$videoCount+'; unverified candidates='+$videoCandidates.Count) -MediaUrl $Url
 if ($extractor) {
     if ($extractor.playlist_title) { $title=$extractor.playlist_title }
     elseif ($extractor.title) { $title=$extractor.title }
@@ -162,10 +176,16 @@ if ($extractorLog -and (Test-Path -LiteralPath $extractorLog)) {
     Copy-Item -LiteralPath $extractorLog -Destination (Join-Path $folder 'extractor.log') -Force
 }
 $manifestPath = Join-Path $folder 'scan.json'
-[pscustomobject]@{Page=$Url;Title=$title;Time=(Get-Date -Format o);Videos=@($videos.ToArray());Images=@($images.ToArray());ExtractorVideoCount=$extractorCount;Warnings=@($warnings.ToArray())} | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+[pscustomobject]@{Page=$Url;Title=$title;Time=(Get-Date -Format o);Videos=@($videos.ToArray());VideoCandidates=$videoCandidates;VideoSelection=$selection;SiteAdapterSelected=$siteAdapted;Images=@($images.ToArray());ExtractorVideoCount=$extractorCount;Warnings=@($warnings.ToArray())} | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
 Write-Host ("Scan result: {0} videos, {1} images" -f $videoCount,$images.Count)
+$unresolvedVideo=$Type -ne 'image' -and $videoCount -eq 0
+if($unresolvedVideo){
+    Write-Warning 'Main video not identified. No unconfirmed video URLs will be downloaded.'
+    Write-Diagnostic -Stage 'main-video-selection' -Message $selection.Reason -MediaUrl $Url
+}
 if ($ScanOnly) { Write-Host "Scan manifest: $manifestPath"; $client.Dispose(); return }
 $results = New-Object 'Collections.Generic.List[object]'
+if($unresolvedVideo){$results.Add([pscustomobject]@{Kind='video';Url=$Url;Success=$false;Stage='main-video-selection';Error=$selection.Reason})}
 function DownloadVideo([string]$link,[string]$template) {
     $archiveDir = Join-Path $OutputDirectory '.archives'; [IO.Directory]::CreateDirectory($archiveDir) | Out-Null
     $digest = [Security.Cryptography.SHA256]::Create()

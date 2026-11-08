@@ -27,6 +27,16 @@ Types: `all` (default), `video`, `image`. A limit of zero means unlimited. `-Sca
 
 ## Supported behavior
 
+### Main video selection (1.2)
+
+Automatic downloads use confirmed player sources, explicit page video metadata, direct media responses, or specialized site extractors. A single HTML video player is selected; an explicit main-player marker can distinguish it from other players. Alternative sources inside one player are treated as formats of one video, not separate downloads. Multiple indistinguishable players or conflicting metadata are reported as ambiguous.
+
+Raw media links in scripts, recommendations, anchor tags, and hidden data are saved as `VideoCandidates` in `scan.json`; they are never used as automatic replacements for an unresolved main video. Generic extractor results are not trusted when no main player was confirmed. A failed main download does not trigger a download of unrelated candidates. Dedicated series adapters retain their episode-list behavior.
+
+`VideoSelection` records the selection reason and player evidence. The error log records a selection summary and unresolved decisions. A download run with no confirmed main video exits with code 2, even if images were downloaded. Scan-only runs still produce a manifest without starting downloads.
+
+This is conservative static-page selection, not browser network capture. JavaScript-only players and unsupported embedded players may remain unresolved; their candidate URLs are retained for diagnosis. Selecting a player identifies its declared source, not a guarantee about the contents of a remote stream.
+
 - Videos: yt-dlp site extractors, direct media URLs, HLS/DASH, and supported playlists. An Ikanbot adapter selects one playback source to avoid duplicate episodes. It preserves the series title and normalizes original Chinese episode labels to two digits. Other extractors preserve individual video titles without appending IDs.
 - Images: HTML image tags, common lazy-loading attributes, srcset variants, posters, Open Graph images, and explicit image links. Responses must have an image MIME type. Different srcset sizes are separate downloads.
 - Content file and folder names preserve Unicode titles. Only characters invalid in Windows filenames are replaced; reserved names and overly long names may be adjusted. Source metadata in JSON manifests is preserved. Distinct videos with identical titles share a target filename, so use separate output roots if needed.
@@ -48,6 +58,8 @@ Events include timestamps, run ID, environment details, failure stage, resource 
 Logs remain local and are never automatically uploaded. Error logs, `download.log`, and `extractor.log` redact URL credentials, query strings, fragments, and common credential fields. URL paths and local paths can still contain personal information. Review logs before sharing. `scan.json` and `results.json` retain original URLs and may contain signed links; do not publish them without review.
 
 ## Development
+
+Run `tests\TestVideoSelection.ps1`, `tests\TestNaming.ps1`, and `tests\TestDiagnostics.ps1` with Windows PowerShell. `tests\TestMainVideoDownload.ps1` additionally requires installed binaries and uses a local HTTP fixture to verify that a main video downloads while recommendation URLs are never requested, and that an unresolved page fails explicitly.
 
 Source files, documentation, and upstream license notices are tracked in Git. Downloaded media, runtime logs, archives, and third-party executable binaries are excluded. Run the dependency installer after cloning.
 
